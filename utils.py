@@ -3,10 +3,15 @@ import pdb
 import pickle as pkl
 
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+import dgl
+import dgl.data
 import numpy as np
 import networkx as nx
 import scipy.sparse as sp
-
+from scipy.sparse import csr_matrix
 
 def _load_data(dataset_str):
     """Load data."""
@@ -58,10 +63,10 @@ def _load_data(dataset_str):
     labels[test_idx_reorder, :] = labels[test_idx_range, :]
 
     idx_test = test_idx_range.tolist()
-    idx_train = range(len(ally)-500)
-    idx_val = range(len(ally)-500, len(ally))
-    # idx_train = range(len(y))
-    # idx_val = range(len(y), len(y)+500)
+    idx_train = range(len(ally) )
+    idx_val = range(len(ally)-0, len(ally))
+    # idx_train = range(len(ally)-500)
+    # idx_val = range(len(ally)-500, len(ally))
 
     train_mask = sample_mask(idx_train, labels.shape[0])
     val_mask = sample_mask(idx_val, labels.shape[0])
@@ -106,6 +111,8 @@ def nontuple_preprocess_adj(adj):
 
 
 def load_data(dataset):
+    if dataset == "reddit":
+        return load_reddit()
     # train_mask, val_mask, test_mask: np.ndarray, [True/False] * node_number
     adj, features, y_train, y_val, y_test, train_mask, val_mask, test_mask = \
         _load_data(dataset)
@@ -138,9 +145,42 @@ def load_data(dataset):
     # y_train = torch.LongTensor(y_train)
     # y_test = torch.LongTensor(y_test)
     # test_index = torch.LongTensor(test_index)
-
     return (norm_adj, features, norm_adj_train, train_features,
-            y_train, y_test, test_index)
+            y_train, y_test, test_index, adj_train)
+
+
+def load_reddit():
+    dataset = dgl.data.RedditDataset()
+    g = dataset[0]
+    node = g.ndata
+    edge = g.edges()
+    num_node = len(node['train_mask'])
+    num_train = torch.sum(node['train_mask'])
+    feats =  node['feat'].detach().numpy()
+    labels = node['label']
+    labels = F.one_hot(labels, num_classes=41).detach().numpy()
+    """ Get adjacency matrix from edge node pairs"""
+    row = edge[1].detach().numpy()
+    col = edge[0].detach().numpy()
+    dat = np.ones((len(row)))
+    print("========= Generating adjacency matrix ===========")
+    adj = csr_matrix((dat, (row, col)), shape=(232965, 232965))
+    """ Get training and testing samples index """
+    train_index = np.arange(num_node)[node['train_mask']]
+    test_index = np.arange(num_node)[node['test_mask']]
+
+    adj_train = adj[train_index, :][:, train_index]
+    y_train = labels[train_index]
+    y_test = labels[test_index]
+    train_features = feats[train_index]
+    
+    """ Normalize the adjacency matrix """
+    norm_adj_train = nontuple_preprocess_adj(adj_train)
+    norm_adj = nontuple_preprocess_adj(adj)   
+    norm_adj = 1*sp.diags(np.ones(norm_adj.shape[0])) + norm_adj
+    norm_adj_train = 1*sp.diags(np.ones(num_train)) + norm_adj_train
+    return (norm_adj, feats, norm_adj_train, train_features, y_train, 
+            y_test, test_index, adj_train)
 
 
 def get_batches(train_ind, train_labels, batch_size=64, shuffle=True):
@@ -176,8 +216,20 @@ def sparse_mx_to_torch_sparse_tensor(sparse_mx):
     return torch.sparse.FloatTensor(indices, values, shape)
 
 
+class HLoss(nn.Module):
+    def __init__(self):
+        super(HLoss, self).__init__()
+
+    def forward(self, x):
+        b = torch.exp(x) * x
+        b = -1.0 * b.sum(dim=1)
+        return b
+
+
 if __name__ == '__main__':
     pdb.set_trace()
     adj, features, adj_train, train_features, y_train, y_test, test_index = \
         load_data('cora')
     pdb.set_trace()
+
+

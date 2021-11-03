@@ -40,7 +40,77 @@ class Sampler:
         return new_adjs
 
 
+
+class Sampler_Random(Sampler):
+    def __init__(self, pre_probs, features, adj, **kwargs):
+        super().__init__(features, adj, **kwargs)
+        # NOTE: uniform sampling can also has the same performance!!!!
+        # try, with the change: col_norm = np.ones(features.shape[0])
+        self.probs = np.arange(adj.shape[0]) / np.sum(adj.shape[0])
+
+    def sampling(self, v):
+        """
+        Inputs:
+            v: batch nodes list
+        """
+        all_support = [[]] * self.num_layers
+        cur_out_nodes = v
+        for layer_index in range(self.num_layers-1, -1, -1):
+            cur_support = self._one_layer_sampling(cur_out_nodes, self.layer_sizes[layer_index])
+            all_support[layer_index] = cur_support
+
+        all_support = self._change_sparse_to_tensor(all_support)
+        sampled_X0 = self.features[cur_out_nodes]
+        return sampled_X0, all_support, 0
+
+    def _one_layer_sampling(self, v_indices, output_size):
+        support = self.adj[v_indices, :]
+        support = support[:, v_indices]
+        sampled_p1 = self.probs[v_indices]
+        support = support.dot(sp.diags(1.0 / (sampled_p1 * output_size)))
+        return support
+
+
 class Sampler_FastGCN(Sampler):
+    def __init__(self, pre_probs, features, adj, **kwargs):
+        super().__init__(features, adj, **kwargs)
+        # NOTE: uniform sampling can also has the same performance!!!!
+        # try, with the change: col_norm = np.ones(features.shape[0])
+        col_norm = sparse_norm(adj, axis=0)
+        self.probs = col_norm / np.sum(col_norm)
+
+    def sampling(self, v):
+        """
+        Inputs:
+            v: batch nodes list
+        """
+        all_support = [[]] * self.num_layers
+
+        cur_out_nodes = v
+        for layer_index in range(self.num_layers-1, -1, -1):
+            cur_sampled, cur_support = self._one_layer_sampling(
+                cur_out_nodes, self.layer_sizes[layer_index])
+            all_support[layer_index] = cur_support
+            cur_out_nodes = cur_sampled
+
+        all_support = self._change_sparse_to_tensor(all_support)
+        sampled_X0 = self.features[cur_out_nodes]
+        return sampled_X0, all_support, 0
+
+    def _one_layer_sampling(self, v_indices, output_size):
+        support = self.adj[v_indices, :]
+        p1 = self.probs/np.sum(self.probs)
+        sampled = np.random.choice(np.arange(len(self.probs)), output_size, True, p1)
+
+        support = support[:, sampled]
+        sampled_p1 = p1[sampled]
+
+        support = support.dot(sp.diags(1.0 / (sampled_p1 * output_size)))
+        return sampled, support
+
+
+
+class Sampler_LADIES(Sampler):
     def __init__(self, pre_probs, features, adj, **kwargs):
         super().__init__(features, adj, **kwargs)
         # NOTE: uniform sampling can also has the same performance!!!!
@@ -185,4 +255,3 @@ if __name__ == '__main__':
 
     batch_inds = list(range(batchsize))
     sampled_feats, sampled_adjs, var_loss = sampler.sampling(batch_inds)
-    pdb.set_trace()
