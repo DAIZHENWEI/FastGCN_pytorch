@@ -7,8 +7,8 @@ import torch.optim as optim
 import numpy as np
 import pdb
 
-from models import GCN, GCN4
-from sampler import Sampler_FastGCN, Sampler_ASGCN, Sampler_LADIES, Sampler_Random
+from models import GCN, GCN3, GCN4
+from sampler import Sampler_FastGCN, Sampler_ASGCN, Sampler_LADIES, Sampler_Random, Sampler_GraphSage
 from utils import load_data, get_batches, accuracy
 from utils import sparse_mx_to_torch_sparse_tensor
 
@@ -39,6 +39,8 @@ def get_args():
                         help='Dropout rate (1 - keep probability).')
     parser.add_argument('--batchsize', type=int, default=256,
                         help='batchsize for train')
+    parser.add_argument('--remove_degree_one', action='store_true', default=False,
+                        help='Recursively remove the nodes with degree one from the adjacency matrix (remove corresponding edges).')
     args = parser.parse_args()
     return args
 
@@ -79,11 +81,14 @@ if __name__ == '__main__':
     # set device
     device = torch.device('cuda:{}'.format(args.gpu) if torch.cuda.is_available() and args.gpu != -1 else 'cpu')
 
-    adj, features, adj_train, train_features, y_train, y_test, test_index, _ = load_data(args.dataset)
+    adj, features, adj_train, train_features, y_train, y_test, test_index, _ = load_data(args.dataset, args)
 
     layer_sizes = [args.batchsize, args.batchsize]
-    if args.dataset == 'reddit':
+    if args.dataset == 'reddit': 
         layer_sizes = [args.batchsize] * 4
+    if args.dataset == 'ogbn_arxiv':
+        layer_sizes = [args.batchsize] * 3
+        neigbhor_sizes = [3] * 3
     input_dim = features.shape[1]
     train_nums = adj_train.shape[0]
     test_gap = args.test_gap
@@ -111,6 +116,11 @@ if __name__ == '__main__':
                                   input_dim=input_dim,
                                   layer_sizes=layer_sizes,
                                   device=device)       
+    elif args.model == 'GraphSage':
+        sampler = Sampler_GraphSage(None, train_features, adj_train,
+                                  input_dim=input_dim,
+                                  layer_sizes=neigbhor_sizes,
+                                  device=device)       
     elif args.model == 'AS':
         sampler = Sampler_ASGCN(None, train_features, adj_train,
                                 input_dim=input_dim,
@@ -128,6 +138,12 @@ if __name__ == '__main__':
     # init model, optimizer and loss function
     if args.dataset == 'reddit':
         model = GCN4(nfeat=features.shape[1],
+                    nhid=args.hidden,
+                    nclass=nclass,
+                    dropout=args.dropout,
+                    sampler=sampler).to(device)
+    elif args.dataset == 'ogbn_arxiv':
+        model = GCN3(nfeat=features.shape[1],
                     nhid=args.hidden,
                     nclass=nclass,
                     dropout=args.dropout,
@@ -162,4 +178,7 @@ if __name__ == '__main__':
               f"test_times: {test_time:.3f}s")
         test_acc_list += [test_acc]
 
-    np.save('./save/test_accuracy_list_{}_{}.npy'.format(args.dataset, args.model), test_acc_list)
+    if args.remove_degree_one:
+        np.save('./save/test_accuracy_list_{}_{}_remove_degree_one.npy'.format(args.dataset, args.model), test_acc_list)
+    else:
+        np.save('./save/test_accuracy_list_{}_{}.npy'.format(args.dataset, args.model), test_acc_list)

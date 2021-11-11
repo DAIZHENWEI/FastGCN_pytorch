@@ -8,8 +8,8 @@ from scipy.sparse.linalg import norm as sparse_norm
 import numpy as np
 import pdb
 
-from models import GCN, GCN4
-from sampler import Sampler_FastGCN, Sampler_ASGCN, Sampler_LADIES, Sampler_Random
+from models import GCN, GCN4, GCN3
+from sampler import Sampler_FastGCN, Sampler_ASGCN, Sampler_LADIES, Sampler_GraphSage, Sampler_Random
 from utils import load_data, accuracy
 from utils import sparse_mx_to_torch_sparse_tensor
 
@@ -42,17 +42,23 @@ def get_args():
                         help='Dropout rate (1 - keep probability).')
     parser.add_argument('--batchsize', type=int, default=256,
                         help='batchsize for train')
+    parser.add_argument('--remove_degree_one', action='store_true', default=False,
+                        help='Recursively remove the nodes with degree one from the adjacency matrix (remove corresponding edges).')
+    parser.add_argument('--exclude_high_degree', action='store_true', default=False,
+                        help='Do not consider the extremely large degree nodes')
     args = parser.parse_args()
     return args
 
 
-def get_batches_active(train_ind, train_labels, col_norm, col_norm_thres, batch_size=128, shuffle=True):
+
+def get_batches_active(train_labels, train_ind_sort, ratio, batch_size=128, shuffle=True):
     """
     Inputs:
         train_ind: np.array
         ratio: proportion of training samples picked
     """
-    train_ind = train_ind[col_norm>=col_norm_thres]
+    train_ind = train_ind_sort[:int(ratio*len(train_ind_sort))]
+    train_ind = np.sort(train_ind)
     nums = train_ind.shape[0]
     if shuffle:
         np.random.shuffle(train_ind)
@@ -63,9 +69,7 @@ def get_batches_active(train_ind, train_labels, col_norm, col_norm_thres, batch_
         yield cur_ind, cur_labels
         i += batch_size
 
-
-
-def train(train_ind, train_labels, batch_size, train_times, col_norm, ratio):
+def train(train_ind, train_labels, batch_size, train_times, train_ind_sort, ratio):
     """
     Inputs:
         ratio: the proportion of the training samples selected
@@ -74,7 +78,7 @@ def train(train_ind, train_labels, batch_size, train_times, col_norm, ratio):
     model.train()
     col_norm_thres = np.quantile(col_norm, 1-ratio)
     for epoch in range(train_times):
-        for batch_inds, batch_labels in get_batches_active(train_ind, train_labels, col_norm, col_norm_thres, batch_size):
+        for batch_inds, batch_labels in get_batches_active(train_labels, train_ind_sort, ratio, batch_size):
             sampled_feats, sampled_adjs, var_loss = model.sampling(batch_inds)
             optimizer.zero_grad()
             output = model(sampled_feats, sampled_adjs)
@@ -99,12 +103,27 @@ def test(test_adj, test_feats, test_labels, epoch):
 if __name__ == '__main__':
     # load data, set superpara and constant
     args = get_args()
-    adj, features, adj_train, train_features, y_train, y_test, test_index, adj_origin = load_data(args.dataset)
+    adj, features, adj_train, train_features, y_train, y_test, test_index, adj_origin = load_data(args.dataset, args)
+    num_train = len(y_train)
+    col_norm = sparse_norm(adj_origin, ord = 1, axis=0)
+    if args.exclude_high_degree:
+        col_degree = sparse_norm(adj_origin, axis=0)
+        train_ind_degree_sort = np.arange(num_train)[col_degree.argsort()[::-1]]
+        high_degree_nodes = train_ind_degree_sort[:int(0.01*num_train)]
+        col_norm[high_degree_nodes] = 0
+
+    """ need to get the original adjacency matrix for model training"""
+    if args.remove_degree_one:
+        args.remove_degree_one = False
+        adj, features, adj_train, train_features, y_train, y_test, test_index, adj_origin = load_data(args.dataset, args)
+        args.remove_degree_one = True
 
     # layer_sizes = [128, 128]
     layer_sizes = [args.batchsize, args.batchsize]
     if args.dataset == 'reddit':
         layer_sizes = [args.batchsize] * 4
+    if args.dataset == 'ogbn_arxiv':
+        layer_sizes = [args.batchsize] * 3
     input_dim = features.shape[1]
     train_nums = adj_train.shape[0]
     test_gap = args.test_gap
@@ -121,8 +140,6 @@ if __name__ == '__main__':
     features = torch.FloatTensor(features).to(device)
     train_features = torch.FloatTensor(train_features).to(device)
     y_train = torch.LongTensor(y_train).to(device).max(1)[1]
-
-    col_norm = sparse_norm(adj_origin, ord = 1, axis=0)
 
     test_adj = [adj, adj[test_index, :]]
     test_feats = features
@@ -142,7 +159,12 @@ if __name__ == '__main__':
         sampler = Sampler_LADIES(None, train_features, adj_train,
                                   input_dim=input_dim,
                                   layer_sizes=layer_sizes,
-                                  device=device)       
+                                  device=device)    
+    elif args.model == 'GraphSage':
+        sampler = Sampler_GraphSage(None, train_features, adj_train,
+                                  input_dim=input_dim,
+                                  layer_sizes=layer_sizes,
+                                  device=device)      
     elif args.model == 'AS':
         sampler = Sampler_ASGCN(None, train_features, adj_train,
                                 input_dim=input_dim,
@@ -164,6 +186,12 @@ if __name__ == '__main__':
                     nclass=nclass,
                     dropout=args.dropout,
                     sampler=sampler).to(device)
+    elif args.dataset == 'ogbn_arxiv':
+        model = GCN3(nfeat=features.shape[1],
+                    nhid=args.hidden,
+                    nclass=nclass,
+                    dropout=args.dropout,
+                    sampler=sampler).to(device)
     else:
         model = GCN(nfeat=features.shape[1],
                     nhid=args.hidden,
@@ -176,12 +204,13 @@ if __name__ == '__main__':
 
     # train and test
     test_acc_list = []
+    train_ind_sort = np.arange(train_nums)[col_norm.argsort()[::-1]]
     for epochs in range(0, args.epochs // test_gap):
         train_loss, train_acc, train_time = train(np.arange(train_nums),
                                                   y_train,
                                                   args.batchsize,
                                                   test_gap, 
-                                                  col_norm, 
+                                                  train_ind_sort, 
                                                   args.ratio)
         test_loss, test_acc, test_time = test(test_adj,
                                               test_feats,
@@ -196,4 +225,9 @@ if __name__ == '__main__':
               f"test_times: {test_time:.3f}s")
         test_acc_list += [test_acc]
 
-    np.save('./save/test_accuracy_list_{}_{}_active_degree_ratio{}.npy'.format(args.dataset, args.model, args.ratio), test_acc_list)
+    if args.remove_degree_one:
+        np.save('./save/test_accuracy_list_{}_{}_active_degree_remove_degree_one_ratio{}.npy'.format(args.dataset, args.model, args.ratio), test_acc_list)
+    elif args.exclude_high_degree:
+        np.save('./save/test_accuracy_list_{}_{}_active_degree_exclude_high_degree_ratio{}.npy'.format(args.dataset, args.model, args.ratio), test_acc_list)
+    else:
+        np.save('./save/test_accuracy_list_{}_{}_active_degree_ratio{}.npy'.format(args.dataset, args.model, args.ratio), test_acc_list)

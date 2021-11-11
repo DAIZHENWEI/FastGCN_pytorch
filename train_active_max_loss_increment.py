@@ -8,7 +8,7 @@ from scipy.sparse.linalg import norm as sparse_norm
 import numpy as np
 import pdb
 
-from models import GCN
+from models import GCN, GCN4, GCN3
 from sampler import Sampler_FastGCN, Sampler_ASGCN, Sampler_LADIES, Sampler_Random
 from utils import load_data, accuracy, HLoss, get_batches
 from utils import sparse_mx_to_torch_sparse_tensor
@@ -24,8 +24,7 @@ def get_args():
                         help='model name.')
     parser.add_argument('--test_gap', type=int, default=1,
                         help='the train epochs between two test')
-    parser.add_argument('--no-cuda', action='store_true', default=True,
-                        help='Disables CUDA training.')
+    parser.add_argument('--gpu', type=int, default=0, help='GPU device to use. -1 means')
     parser.add_argument('--fastmode', action='store_true', default=False,
                         help='Validate during training pass.')
     parser.add_argument('--seed', type=int, default=123, help='Random seed.')
@@ -49,8 +48,11 @@ def get_args():
                         help='Dropout rate (1 - keep probability).')
     parser.add_argument('--batchsize', type=int, default=256,
                         help='batchsize for train')
+    parser.add_argument('--remove_degree_one', action='store_true', default=False,
+                        help='Recursively remove the nodes with degree one from the adjacency matrix (remove corresponding edges).')
+    parser.add_argument('--exclude_high_degree', action='store_true', default=False,
+                        help='Do not consider the extremely large degree nodes')
     args = parser.parse_args()
-    args.cuda = not args.no_cuda and torch.cuda.is_available()
     return args
 
 
@@ -115,7 +117,7 @@ def train(train_ind, train_labels, batch_size, train_times):
 def test(test_adj, test_feats, test_labels, epoch):
     t = time.time()
     model.eval()
-    outputs = model(test_feats, test_adj)
+    outputs = model(test_feats, test_adj, test=True)
     loss_test = loss_fn(outputs, test_labels)
     acc_test = accuracy(outputs, test_labels)
 
@@ -129,10 +131,14 @@ if __name__ == '__main__':
     adj: Laplacian matrix of the whole graph
     adj_origin: Adjacency matrix of the whole graph
     """
-    adj, features, adj_train, train_features, y_train, y_test, test_index, adj_origin = load_data(args.dataset)
+    adj, features, adj_train, train_features, y_train, y_test, test_index, adj_origin = load_data(args.dataset, args)
     
     # layer_sizes = [128, 128]
     layer_sizes = [args.batchsize, args.batchsize]
+    if args.dataset == 'reddit':
+        layer_sizes = [args.batchsize] * 4
+    if args.dataset == 'ogbn_arxiv':
+        layer_sizes = [args.batchsize] * 3
     input_dim = features.shape[1]
     num_nodes = adj.shape[0]
     train_nums = adj_train.shape[0]
@@ -141,14 +147,11 @@ if __name__ == '__main__':
 
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-    if args.cuda:
+    # set device
+    if args.gpu != -1:
         torch.cuda.manual_seed(args.seed)
     # set device
-    if args.cuda:
-        device = torch.device("cuda")
-        print("use cuda")
-    else:
-        device = torch.device("cpu")
+    device = torch.device('cuda:{}'.format(args.gpu) if torch.cuda.is_available() and args.gpu != -1 else 'cpu')
 
     # data for train and test
     train_index = np.arange(train_nums)
@@ -157,12 +160,16 @@ if __name__ == '__main__':
     y_train = torch.LongTensor(y_train).to(device).max(1)[1]
 
     col_norm = sparse_norm(adj_train, axis=0)
+    if args.dataset == "reddit":
+        col_norm = np.random.uniform(0, 1, size = train_nums)
     train_probs = col_norm / np.sum(col_norm)
 
     test_adj = [adj, adj[test_index, :]]
     test_feats = features
     test_labels = y_test
-    test_adj = [sparse_mx_to_torch_sparse_tensor(cur_adj).to(device) for cur_adj in test_adj]
+    cur_adj = sparse_mx_to_torch_sparse_tensor(adj).to(device)
+    cur_adj_train = sparse_mx_to_torch_sparse_tensor(adj[train_index, :]).to(device)
+    cur_adj_test = sparse_mx_to_torch_sparse_tensor(adj[test_index, :]).to(device)
     test_labels = torch.LongTensor(test_labels).to(device).max(1)[1]
 
     # pdb.set_trace()
@@ -193,11 +200,24 @@ if __name__ == '__main__':
         exit()
 
     # init model, optimizer and loss function
-    model = GCN(nfeat=features.shape[1],
-                nhid=args.hidden,
-                nclass=nclass,
-                dropout=args.dropout,
-                sampler=sampler).to(device)
+    if args.dataset == 'reddit':
+        model = GCN4(nfeat=features.shape[1],
+                    nhid=args.hidden,
+                    nclass=nclass,
+                    dropout=args.dropout,
+                    sampler=sampler).to(device)
+    elif args.dataset == 'ogbn_arxiv':
+        model = GCN3(nfeat=features.shape[1],
+                    nhid=args.hidden,
+                    nclass=nclass,
+                    dropout=args.dropout,
+                    sampler=sampler).to(device)
+    else:
+        model = GCN(nfeat=features.shape[1],
+                    nhid=args.hidden,
+                    nclass=nclass,
+                    dropout=args.dropout,
+                    sampler=sampler).to(device)
     optimizer = optim.Adam(model.parameters(),
                            lr=args.lr, weight_decay=args.weight_decay)
     loss_fn = F.nll_loss
@@ -205,14 +225,14 @@ if __name__ == '__main__':
     # train and test
     test_acc_list = []
     train_samples_list = []
-    prob_thres = np.quantile(train_probs, 1-args.pretrain_ratio)
-    train_ind_pretrain = train_index[train_probs>=prob_thres]
+    train_ind_sort = train_index[train_probs.argsort()[::-1]]
+    train_ind_pretrain = train_ind_sort[:int(args.pretrain_ratio*train_nums)]
     for epochs in range(0, args.pre_train_epochs // test_gap):
         train_loss, train_acc, train_time = train(train_ind_pretrain,
                                                   y_train,
                                                   args.batchsize,
                                                   test_gap)
-        test_loss, test_acc, test_time = test(test_adj,
+        test_loss, test_acc, test_time = test([cur_adj, cur_adj_test],
                                               test_feats,
                                               test_labels,
                                               args.epochs)
@@ -227,7 +247,6 @@ if __name__ == '__main__':
         train_samples_list += [len(train_ind_pretrain)]
 
     train_adj = [adj, adj[train_index, :]]
-    train_adj = [sparse_mx_to_torch_sparse_tensor(cur_adj).to(device) for cur_adj in train_adj]
     Entropy = HLoss()
 
     """ Continue training """
@@ -235,12 +254,19 @@ if __name__ == '__main__':
                         lr=args.lr, weight_decay=args.weight_decay)
     train_ind_cur = train_ind_pretrain
     for epochs in range(0, (args.epochs - args.pre_train_epochs) // test_gap):
-        if epochs % 500 == 0 and epochs < args.comp_embed_epochs:
+        if epochs % 20 == 0 and epochs < args.comp_embed_epochs:
             """ Compute loss scores """
             model.eval()
-            outputs = model(features, train_adj)
-            y_train_onehot = F.one_hot(y_train, num_classes=3)
+            outputs = model(features, [cur_adj, cur_adj_train], test=True)
+            if args.dataset == 'pubmed':
+                y_train_onehot = F.one_hot(y_train, num_classes=3)
+            if args.dataset == 'reddit':
+                y_train_onehot = F.one_hot(y_train, num_classes=41)
+            if args.dataset == 'ogbn_arxiv':
+                y_train_onehot = F.one_hot(y_train, num_classes=40)
             L2loss_score = torch.norm((outputs - y_train_onehot), dim = 1).detach().cpu().numpy()
+            del outputs
+            del y_train_onehot
             """ Pick nodes with large losses """
             loss_thres = np.quantile(L2loss_score, 1-args.ratio)
             extra_train_index = train_index[L2loss_score > loss_thres]   
@@ -249,7 +275,7 @@ if __name__ == '__main__':
                                                   y_train,
                                                   args.batchsize,
                                                   test_gap)
-        test_loss, test_acc, test_time = test(test_adj,
+        test_loss, test_acc, test_time = test([cur_adj, cur_adj_test],
                                               test_feats,
                                               test_labels,
                                               args.epochs)

@@ -40,13 +40,13 @@ class Sampler:
         return new_adjs
 
 
-
 class Sampler_Random(Sampler):
     def __init__(self, pre_probs, features, adj, **kwargs):
         super().__init__(features, adj, **kwargs)
         # NOTE: uniform sampling can also has the same performance!!!!
         # try, with the change: col_norm = np.ones(features.shape[0])
-        self.probs = np.arange(adj.shape[0]) / np.sum(adj.shape[0])
+        col_norm = sparse_norm(adj, axis=0)
+        self.probs = col_norm / np.sum(col_norm)
 
     def sampling(self, v):
         """
@@ -56,19 +56,33 @@ class Sampler_Random(Sampler):
         all_support = [[]] * self.num_layers
         cur_out_nodes = v
         for layer_index in range(self.num_layers-1, -1, -1):
-            cur_support = self._one_layer_sampling(cur_out_nodes, self.layer_sizes[layer_index])
+            cur_sampled, cur_support = self._one_layer_sampling(
+                cur_out_nodes, self.layer_sizes[layer_index])
             all_support[layer_index] = cur_support
+            cur_out_nodes = cur_sampled
 
         all_support = self._change_sparse_to_tensor(all_support)
         sampled_X0 = self.features[cur_out_nodes]
         return sampled_X0, all_support, 0
 
     def _one_layer_sampling(self, v_indices, output_size):
+        # NOTE: FastGCN described in paper samples neighboors without reference
+        # to the v_indices. But in its tensorflow implementation, it has used
+        # the v_indice to filter out the disconnected nodes. So the same thing
+        # has been done here.
         support = self.adj[v_indices, :]
-        support = support[:, v_indices]
-        sampled_p1 = self.probs[v_indices]
+        neis = np.nonzero(np.sum(support, axis=0))[1]
+        p1 = np.ones((len(neis)))
+        p1 = p1 / np.sum(p1)
+        sampled = np.random.choice(np.arange(len(neis)),
+                                   min(output_size, len(neis)), False, p1)
+
+        u_sampled = neis[sampled]
+        support = support[:, u_sampled]
+        sampled_p1 = p1[sampled]
+
         support = support.dot(sp.diags(1.0 / (sampled_p1 * output_size)))
-        return support
+        return u_sampled, support
 
 
 class Sampler_FastGCN(Sampler):
@@ -110,6 +124,55 @@ class Sampler_FastGCN(Sampler):
 
 
 
+
+class Sampler_GraphSage(Sampler):
+    def __init__(self, pre_probs, features, adj, **kwargs):
+        super().__init__(features, adj, **kwargs)
+        # NOTE: uniform sampling can also has the same performance!!!!
+        # try, with the change: col_norm = np.ones(features.shape[0])
+        col_norm = sparse_norm(adj, axis=0)
+        self.probs = col_norm / np.sum(col_norm)
+
+    def sampling(self, v):
+        """
+        Inputs:
+            v: batch nodes list
+        """
+        all_support = [[]] * self.num_layers
+        cur_out_nodes = v
+        for layer_index in range(self.num_layers-1, -1, -1):
+            cur_sampled, cur_support = self._one_layer_sampling(
+                cur_out_nodes, self.layer_sizes[layer_index])
+            all_support[layer_index] = cur_support
+            cur_out_nodes = cur_sampled
+
+        all_support = self._change_sparse_to_tensor(all_support)
+        sampled_X0 = self.features[cur_out_nodes]
+        return sampled_X0, all_support, 0
+
+    def _one_layer_sampling(self, v_indices, output_size):
+        # NOTE: FastGCN described in paper samples neighboors without reference
+        # to the v_indices. But in its tensorflow implementation, it has used
+        # the v_indice to filter out the disconnected nodes. So the same thing
+        # has been done here.
+        sampled_list = []
+
+        for s in v_indices:
+            support = self.adj[s,:]
+            neis = np.nonzero(np.sum(support, axis=0))[1]
+            sampled = np.random.choice(neis, output_size, True)
+            if len(sampled_list) == 0:
+                sampled_list = sampled
+            else:
+                sampled_list = np.concatenate((sampled_list, sampled))
+        u_sampled = np.unique(sampled_list)
+        support = self.adj[v_indices, :]
+        support = support[:, u_sampled]
+
+        return u_sampled, support
+
+
+
 class Sampler_LADIES(Sampler):
     def __init__(self, pre_probs, features, adj, **kwargs):
         super().__init__(features, adj, **kwargs)
@@ -124,7 +187,6 @@ class Sampler_LADIES(Sampler):
             v: batch nodes list
         """
         all_support = [[]] * self.num_layers
-
         cur_out_nodes = v
         for layer_index in range(self.num_layers-1, -1, -1):
             cur_sampled, cur_support = self._one_layer_sampling(

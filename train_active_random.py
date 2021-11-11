@@ -8,7 +8,7 @@ from scipy.sparse.linalg import norm as sparse_norm
 import numpy as np
 import pdb
 
-from models import GCN, GCN4
+from models import GCN, GCN4, GCN3
 from sampler import Sampler_FastGCN, Sampler_ASGCN, Sampler_LADIES, Sampler_Random
 from utils import load_data, accuracy
 from utils import sparse_mx_to_torch_sparse_tensor
@@ -42,6 +42,10 @@ def get_args():
                         help='Dropout rate (1 - keep probability).')
     parser.add_argument('--batchsize', type=int, default=256,
                         help='batchsize for train')
+    parser.add_argument('--remove_degree_one', action='store_true', default=False,
+                        help='Recursively remove the nodes with degree one from the adjacency matrix (remove corresponding edges).')
+    parser.add_argument('--exclude_high_degree', action='store_true', default=False,
+                        help='Do not consider the extremely large degree nodes')
     args = parser.parse_args()
     return args
 
@@ -100,12 +104,19 @@ def test(test_adj, test_feats, test_labels, epoch):
 if __name__ == '__main__':
     # load data, set superpara and constant
     args = get_args()
-    adj, features, adj_train, train_features, y_train, y_test, test_index, adj_origin = load_data(args.dataset)
+    flag = False
+    if args.remove_degree_one:
+        flag = True
+    args.remove_degree_one = False
+    adj, features, adj_train, train_features, y_train, y_test, test_index, adj_origin = load_data(args.dataset, args)
+    args.remove_degree_one = flag
 
     # layer_sizes = [128, 128]
     layer_sizes = [args.batchsize, args.batchsize]
     if args.dataset == 'reddit':
         layer_sizes = [args.batchsize] * 4
+    if args.dataset == 'ogbn_arxiv':
+        layer_sizes = [args.batchsize] * 3
     input_dim = features.shape[1]
     train_nums = adj_train.shape[0]
     test_gap = args.test_gap
@@ -166,6 +177,12 @@ if __name__ == '__main__':
                     nclass=nclass,
                     dropout=args.dropout,
                     sampler=sampler).to(device)
+    elif args.dataset == 'ogbn_arxiv':
+        model = GCN3(nfeat=features.shape[1],
+                    nhid=args.hidden,
+                    nclass=nclass,
+                    dropout=args.dropout,
+                    sampler=sampler).to(device)
     else:
         model = GCN(nfeat=features.shape[1],
                     nhid=args.hidden,
@@ -178,8 +195,16 @@ if __name__ == '__main__':
 
     # train and test
     test_acc_list = []
+    train_ind = np.arange(train_nums)
+    col_norm = sparse_norm(adj_origin, ord = 1, axis=0)
+    train_index = np.arange(train_nums)
+    if args.exclude_high_degree:
+        col_degree = sparse_norm(adj_origin, axis=0)
+        train_ind_degree_sort = train_ind[col_degree.argsort()[::-1]]
+        train_index = train_ind_degree_sort[int(0.01*train_nums):]
+
     for epochs in range(0, args.epochs // test_gap):
-        train_loss, train_acc, train_time = train(np.arange(train_nums),
+        train_loss, train_acc, train_time = train(train_index,
                                                   y_train,
                                                   args.batchsize,
                                                   test_gap, 
@@ -198,4 +223,9 @@ if __name__ == '__main__':
               f"test_times: {test_time:.3f}s")
         test_acc_list += [test_acc]
 
-    np.save('./save/test_accuracy_list_{}_{}_active_random_ratio{}.npy'.format(args.dataset, args.model, args.ratio), test_acc_list)
+    if args.remove_degree_one:
+        np.save('./save/test_accuracy_list_{}_{}_active_random_remove_degree_one_ratio{}.npy'.format(args.dataset, args.model, args.ratio), test_acc_list)
+    elif args.exclude_high_degree:
+        np.save('./save/test_accuracy_list_{}_{}_active_random_exclude_high_degree_ratio{}.npy'.format(args.dataset, args.model, args.ratio), test_acc_list)
+    else:
+        np.save('./save/test_accuracy_list_{}_{}_active_random_ratio{}.npy'.format(args.dataset, args.model, args.ratio), test_acc_list)

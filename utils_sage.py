@@ -188,11 +188,13 @@ def load_reddit(args):
             y_test, test_index, adj_train)
 
 
+
+
 def load_ogbn_arxiv(args):
     dataset = DglNodePropPredDataset('ogbn-arxiv')
     g, node_labels = dataset[0]
     g = dgl.add_reverse_edges(g)
-    g.ndata['label'] = node_labels[:, 0]
+    labels = node_labels[:, 0]
     node = g.ndata
     edge = g.edges()    
 
@@ -204,9 +206,8 @@ def load_ogbn_arxiv(args):
 
     num_node = feats.shape[0]
     num_train = len(train_index)
-    feats =  node['feat'].detach().numpy()
-    labels = node['label']
-    labels = F.one_hot(labels, num_classes=40).detach().numpy()
+    feats =  node['feat']
+    # labels = F.one_hot(labels, num_classes=40).detach().numpy()
     """ Get adjacency matrix from edge node pairs"""
     row = edge[1].detach().numpy()
     col = edge[0].detach().numpy()
@@ -219,19 +220,26 @@ def load_ogbn_arxiv(args):
         dat = np.ones((len(row_s)))
         print("========= Generating pruned adjacency matrix ===========")
         adj = csr_matrix((dat, (row_s, col_s)), shape=(num_node, num_node)) 
-               
+        """ Generate the graph using the updated adjacency matrix """
+        row_s = torch.from_numpy(row_s)
+        col_s = torch.from_numpy(col_s)
+        g = dgl.graph((row_s, col_s), num_nodes=num_node)
+        g.ndata['feat'] = feats
+        g.ndata['label'] = labels
+
     adj_train = adj[train_index, :][:, train_index]
-    y_train = labels[train_index]
-    y_test = labels[test_index]
-    train_features = feats[train_index]
 
     """ Normalize the adjacency matrix """
     norm_adj_train = nontuple_preprocess_adj(adj_train)
     norm_adj = nontuple_preprocess_adj(adj)   
     norm_adj = 1*sp.diags(np.ones(norm_adj.shape[0])) + norm_adj
     norm_adj_train = 1*sp.diags(np.ones(num_train)) + norm_adj_train
-    return (norm_adj, feats, norm_adj_train, train_features, y_train, 
-            y_test, test_index, adj_train)
+
+    return (train_index, valid_index, test_index, feats.shape[1], labels, 40, feats, g, norm_adj_train, adj_train)
+
+
+    # return (norm_adj, feats, norm_adj_train, train_features, y_train, 
+    #         y_test, test_index, adj_train)
 
 
 
@@ -257,9 +265,8 @@ def remove_degree_one(adj, row, col):
         index_remove = np.intersect1d(col, one_ind, return_indices = True)
         row = np.delete(row, index_remove[1])
         col = np.delete(col, index_remove[1])
+
     return adj, ind, row, col
-
-
 
 def get_batches(train_ind, train_labels, batch_size=64, shuffle=True):
     """

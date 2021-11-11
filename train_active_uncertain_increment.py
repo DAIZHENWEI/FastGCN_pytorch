@@ -8,7 +8,7 @@ from scipy.sparse.linalg import norm as sparse_norm
 import numpy as np
 import pdb
 
-from models import GCN
+from models import GCN, GCN4
 from sampler import Sampler_FastGCN, Sampler_ASGCN, Sampler_LADIES, Sampler_Random
 from utils import load_data, accuracy, HLoss, get_batches
 from utils import sparse_mx_to_torch_sparse_tensor
@@ -24,8 +24,7 @@ def get_args():
                         help='model name.')
     parser.add_argument('--test_gap', type=int, default=1,
                         help='the train epochs between two test')
-    parser.add_argument('--no-cuda', action='store_true', default=True,
-                        help='Disables CUDA training.')
+    parser.add_argument('--gpu', type=int, default=0, help='GPU device to use. -1 means')
     parser.add_argument('--fastmode', action='store_true', default=False,
                         help='Validate during training pass.')
     parser.add_argument('--seed', type=int, default=123, help='Random seed.')
@@ -115,7 +114,7 @@ def train(train_ind, train_labels, batch_size, train_times):
 def test(test_adj, test_feats, test_labels, epoch):
     t = time.time()
     model.eval()
-    outputs = model(test_feats, test_adj)
+    outputs = model(test_feats, test_adj, test=True)
     loss_test = loss_fn(outputs, test_labels)
     acc_test = accuracy(outputs, test_labels)
 
@@ -141,14 +140,10 @@ if __name__ == '__main__':
 
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-    if args.cuda:
+    if args.gpu != -1:
         torch.cuda.manual_seed(args.seed)
     # set device
-    if args.cuda:
-        device = torch.device("cuda")
-        print("use cuda")
-    else:
-        device = torch.device("cpu")
+    device = torch.device('cuda:{}'.format(args.gpu) if torch.cuda.is_available() and args.gpu != -1 else 'cpu')
 
     # data for train and test
     train_index = np.arange(train_nums)
@@ -193,11 +188,18 @@ if __name__ == '__main__':
         exit()
 
     # init model, optimizer and loss function
-    model = GCN(nfeat=features.shape[1],
-                nhid=args.hidden,
-                nclass=nclass,
-                dropout=args.dropout,
-                sampler=sampler).to(device)
+    if args.dataset == 'reddit':
+        model = GCN4(nfeat=features.shape[1],
+                    nhid=args.hidden,
+                    nclass=nclass,
+                    dropout=args.dropout,
+                    sampler=sampler).to(device)
+    else:
+        model = GCN(nfeat=features.shape[1],
+                    nhid=args.hidden,
+                    nclass=nclass,
+                    dropout=args.dropout,
+                    sampler=sampler).to(device)
     optimizer = optim.Adam(model.parameters(),
                            lr=args.lr, weight_decay=args.weight_decay)
     loss_fn = F.nll_loss
