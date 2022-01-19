@@ -8,29 +8,44 @@ import tqdm
 import pdb
 
 
+# class GCN(nn.Module):
+#     def __init__(self, nfeat, nhid, nclass, dropout, sampler):
+#         super().__init__()
+
+#         self.gc1 = GraphConvolution(nfeat, nhid)
+#         self.gc2 = GraphConvolution(nhid, nhid)
+#         self.out = nn.Linear(nhid, nclass)
+#         self.dropout = dropout
+#         self.sampler = sampler
+#         self.out_softmax = nn.Softmax(dim=1)
+
+#     def forward(self, x, adj, compute_embed=False, test=False):
+#         outputs = F.relu(self.gc1(x, adj[0]))
+#         outputs = F.dropout(outputs, self.dropout, training=self.training)
+#         outputs = F.relu(self.gc2(outputs, adj[1]))
+#         if compute_embed:
+#             return outputs
+#         outputs = self.out(outputs)
+#         return F.log_softmax(outputs, dim=1)
+
+#     def sampling(self, *args, **kwargs):
+#         return self.sampler.sampling(*args, **kwargs)
+
+
 class GCN(nn.Module):
-    def __init__(self, nfeat, nhid, nclass, dropout, sampler):
-        super().__init__()
+    def __init__(self, nfeat, nhid, nclass, dropout):
+        super(GCN, self).__init__()
 
-        self.gc1 = GraphConvolution(nfeat, nhid)
-        self.gc2 = GraphConvolution(nhid, nhid)
-        self.out = nn.Linear(nhid, nclass)
+        self.gc1 = GraphConvolution(nfeat, nhid,bias=True)
+        self.gc2 = GraphConvolution(nhid, nclass,bias=True)
         self.dropout = dropout
-        self.sampler = sampler
-        self.out_softmax = nn.Softmax(dim=1)
 
-    def forward(self, x, adj, compute_embed=False, test=False):
-        outputs = F.relu(self.gc1(x, adj[0]))
-        outputs = F.dropout(outputs, self.dropout, training=self.training)
-        outputs = F.relu(self.gc2(outputs, adj[1]))
-        if compute_embed:
-            return outputs
-        outputs = self.out(outputs)
-        return F.log_softmax(outputs, dim=1)
-
-    def sampling(self, *args, **kwargs):
-        return self.sampler.sampling(*args, **kwargs)
-
+    def forward(self, x, adj):
+        x = F.dropout(x, self.dropout, training=self.training)
+        x = F.relu(self.gc1(x, adj))
+        x = F.dropout(x, self.dropout, training=self.training)
+        x = self.gc2(x, adj)
+        return x
 
 
 class GCN3(nn.Module):
@@ -123,7 +138,6 @@ class GCN4(nn.Module):
 
 
 
-
 class SAGE(nn.Module):
     def __init__(self,
                  in_feats,
@@ -144,7 +158,6 @@ class SAGE(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.activation = activation
 
-
     def forward(self, blocks, x):
         h = x
         for l, (layer, block) in enumerate(zip(self.layers, blocks)):
@@ -160,7 +173,6 @@ class SAGE(nn.Module):
                 h = self.activation(h)
                 h = self.dropout(h)
         return h
-
 
     def inference(self, g, x, device, args):
         """
@@ -183,8 +195,8 @@ class SAGE(nn.Module):
                 g,
                 torch.arange(g.num_nodes()),
                 sampler,
-                batch_size=args.batchsize,
-                shuffle=True,
+                batch_size=args.test_batchsize,
+                shuffle=False,
                 drop_last=False,
                 num_workers=args.num_workers)
 
@@ -197,8 +209,30 @@ class SAGE(nn.Module):
                 if l != len(self.layers) - 1:
                     h = self.activation(h)
                     h = self.dropout(h)
-
                 y[output_nodes] = h
-
             x = y
         return y
+
+
+
+class MLP(nn.Module):
+    def __init__(self, nfeat, nhid, nclass, dropout, layer):
+        super().__init__()
+        self.nlayer = layer
+        self.layer_in = nn.Linear(nfeat, nhid)
+        self.layer_hidden = nn.ModuleList()
+        for i in range(layer-2):
+            self.layer_hidden.append(nn.Linear(nhid, nhid))
+            self.layer_hidden.append(nn.Dropout(dropout))
+            self.layer_hidden.append(nn.ReLU())
+        self.layer_out = nn.Linear(nhid, nclass)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        outputs = self.layer_in(x)
+        outputs = F.relu(self.dropout(outputs))
+        if self.nlayer > 2:
+            for layer in self.layer_hidden:
+                outputs = layer(outputs) 
+        outputs = self.layer_out(outputs)
+        return outputs  

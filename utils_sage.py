@@ -1,19 +1,24 @@
 import sys
 import pdb
 import pickle as pkl
-
+import copy
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 import dgl
 import dgl.data
+import os
 import numpy as np
+import numpy.linalg as LA
 import networkx as nx
 import scipy
 import scipy.sparse as sp
 from scipy.sparse import csr_matrix
 from ogb.nodeproppred import DglNodePropPredDataset
+
+
+
 
 def _load_data(dataset_str):
     """Load data."""
@@ -106,15 +111,27 @@ def normalize_adj(adj):
     return adj.dot(d_mat_inv_sqrt).transpose().dot(d_mat_inv_sqrt).tocoo()
 
 
+# def nontuple_preprocess_adj(adj):
+#     adj_normalized = normalize_adj(sp.eye(adj.shape[0]) + adj)
+#     return adj_normalized.tocsr()
+
 def nontuple_preprocess_adj(adj):
-    adj_normalized = normalize_adj(sp.eye(adj.shape[0]) + adj)
-    # adj_normalized = sp.eye(adj.shape[0]) + normalize_adj(adj)
+    adj_normalized = normalize_adj(adj)
     return adj_normalized.tocsr()
 
 
+def K_medoids(feats, num_cluster):
+    kmeans = KMeans(n_clusters=num_cluster, random_state=0).fit(feats)
+    labels = kmeans.labels_
+    centers = kmeans.cluster_centers_
+    for i in range(num_cluster):
+        feats_cluster = feats[labels==i]
+        dists = (feats_cluster - centers)
+
+
 def load_data(dataset, args):
-    if dataset == "reddit":
-        return load_reddit(args)
+    if dataset == "pubmed":
+        return load_pubmed(args)
     if dataset == "ogbn_arxiv":
         return load_ogbn_arxiv(args)
     # train_mask, val_mask, test_mask: np.ndarray, [True/False] * node_number
@@ -153,93 +170,284 @@ def load_data(dataset, args):
             y_train, y_test, test_index, adj_train)
 
 
-def load_reddit(args):
-    dataset = dgl.data.RedditDataset()
-    g = dataset[0]
-    node = g.ndata
-    edge = g.edges()
-    num_node = len(node['train_mask'])
-    num_train = torch.sum(node['train_mask'])
-    feats =  node['feat'].detach().numpy()
-    labels = node['label']
-    num_labels = len(torch.unique(num_labels))
-    labels = F.one_hot(labels, num_classes=num_labels).detach().numpy()
-    """ Get adjacency matrix from edge node pairs"""
-    row = edge[1].detach().numpy()
-    col = edge[0].detach().numpy()
-    dat = np.ones((len(row)))
-    print("========= Generating adjacency matrix ===========")
-    adj = csr_matrix((dat, (row, col)), shape=(num_node, num_node))
-    """ Get training and testing samples index """
-    train_index = np.arange(num_node)[node['train_mask']]
-    test_index = np.arange(num_node)[node['test_mask']]
-
-    adj_train = adj[train_index, :][:, train_index]
-    y_train = labels[train_index]
-    y_test = labels[test_index]
-    train_features = feats[train_index]
-    
-    """ Normalize the adjacency matrix """
-    norm_adj_train = nontuple_preprocess_adj(adj_train)
-    norm_adj = nontuple_preprocess_adj(adj)   
-    norm_adj = 1*sp.diags(np.ones(norm_adj.shape[0])) + norm_adj
-    norm_adj_train = 1*sp.diags(np.ones(num_train)) + norm_adj_train
-    return (norm_adj, feats, norm_adj_train, train_features, y_train, 
-            y_test, test_index, adj_train)
 
 
+class load_dgl_data():
+    def __init__(self, g):
+        self.g = g
+        """ Add reverse edges """
+        self.g = dgl.add_reverse_edges(self.g)
+        """ Add self loop """
+        self.g = dgl.add_self_loop(self.g)
+        """ Get features, labels and edges """
+        self.node = self.g.ndata
+        self.edge = self.g.edges()
+        self.feats =  self.node['feat']
+        self.labels = self.node['label']
+        self.num_node = len(self.feats)
+
+    def get_adj(self):
+        """ Get adjacency matrix from edge node pairs"""
+        row = self.edge[1].detach().numpy()
+        col = self.edge[0].detach().numpy()
+        dat = np.ones((len(row)))
+        print("========= Generating adjacency matrix ===========")
+        adj = csr_matrix((dat, (row, col)), shape=(self.num_node, self.num_node))    
+        return adj
+
+    def get_norm_laplacian(self, train_index = None, train = False):
+        if train and train_index is None:
+            raise("train index is not provided")
+        adj = self.get_adj()
+        """ when train==True, only get the laplacian matrix between training nodes """
+        if train:
+            adj = adj[train_index, :][:, train_index]
+        """ Normalize the adjacency matrix """
+        norm_adj = nontuple_preprocess_adj(adj)   
+        # norm_adj = 1*sp.diags(np.ones(norm_adj.shape[0])) + norm_adj
+        return norm_adj
 
 
-def load_ogbn_arxiv(args):
-    dataset = DglNodePropPredDataset('ogbn-arxiv')
-    g, node_labels = dataset[0]
-    g = dgl.add_reverse_edges(g)
-    labels = node_labels[:, 0]
-    node = g.ndata
-    edge = g.edges()    
 
-    feats = g.ndata['feat']
-    idx_split = dataset.get_idx_split()
-    train_index = idx_split['train']
-    valid_index = idx_split['valid']
-    test_index = idx_split['test']
+# class load_pubmed():
+#     def __init__(self, args):
+#         self.dataset = dgl.data.PubmedGraphDataset()
+#         self.g = self.dataset[0]
+#         self.graph = load_dgl_data(self.g)  
+#         self.num_node = len(self.graph.feats)
+#         self.data_split()    
 
-    num_node = feats.shape[0]
-    num_train = len(train_index)
-    feats =  node['feat']
-    # labels = F.one_hot(labels, num_classes=40).detach().numpy()
-    """ Get adjacency matrix from edge node pairs"""
-    row = edge[1].detach().numpy()
-    col = edge[0].detach().numpy()
-    dat = np.ones((len(row)))
-    print("========= Generating adjacency matrix ===========")
-    adj = csr_matrix((dat, (row, col)), shape=(num_node, num_node))
+#     def data_split(self):
+#         val_mask = self.g.ndata['val_mask']
+#         test_mask = self.g.ndata['test_mask']
+#         valid_index = np.arange(self.num_node)[val_mask]
+#         test_index = np.arange(self.num_node)[test_mask]
+#         train_index = np.setdiff1d(np.arange(self.num_node), np.concatenate((valid_index, test_index)))
+#         self.valid_index = torch.from_numpy(valid_index)
+#         self.test_index = torch.from_numpy(test_index)
+#         self.train_index = torch.from_numpy(train_index)
+#         self.num_train = len(train_index)
 
-    if args.remove_degree_one:
-        adj, sample_ind, row_s, col_s = remove_degree_one(adj, row, col)
-        dat = np.ones((len(row_s)))
-        print("========= Generating pruned adjacency matrix ===========")
-        adj = csr_matrix((dat, (row_s, col_s)), shape=(num_node, num_node)) 
-        """ Generate the graph using the updated adjacency matrix """
-        row_s = torch.from_numpy(row_s)
-        col_s = torch.from_numpy(col_s)
-        g = dgl.graph((row_s, col_s), num_nodes=num_node)
-        g.ndata['feat'] = feats
-        g.ndata['label'] = labels
+#     def get_DGL_GCN_inputs(self):
+#         return self.train_index, self.valid_index, self.test_index, self.graph.feats.shape[1], self.graph.labels, 3, self.graph.feats, self.graph.g      
 
-    adj_train = adj[train_index, :][:, train_index]
+#     def get_adj(self):
+#         return self.graph.get_adj()   
 
-    """ Normalize the adjacency matrix """
-    norm_adj_train = nontuple_preprocess_adj(adj_train)
-    norm_adj = nontuple_preprocess_adj(adj)   
-    norm_adj = 1*sp.diags(np.ones(norm_adj.shape[0])) + norm_adj
-    norm_adj_train = 1*sp.diags(np.ones(num_train)) + norm_adj_train
+#     def get_norm_laplacian(self):
+#         return self.graph.get_norm_laplacian()
 
-    return (train_index, valid_index, test_index, feats.shape[1], labels, 40, feats, g, norm_adj_train, adj_train)
+#     def get_norm_laplacian_train(self):
+#         return self.graph.get_norm_laplacian(self.train_index, train=True)       
 
 
-    # return (norm_adj, feats, norm_adj_train, train_features, y_train, 
-    #         y_test, test_index, adj_train)
+# class load_cora():
+#     def __init__(self, args):
+#         self.dataset = dgl.data.CoraGraphDataset()
+#         self.g = self.dataset[0]
+#         self.graph = load_dgl_data(self.g)  
+#         self.num_node = len(self.graph.feats)
+#         self.data_split()    
+
+#     def data_split(self):
+#         val_mask = self.g.ndata['val_mask']
+#         test_mask = self.g.ndata['test_mask']
+#         valid_index = np.arange(self.num_node)[val_mask]
+#         test_index = np.arange(self.num_node)[test_mask]
+#         train_index = np.setdiff1d(np.arange(self.num_node), np.concatenate((valid_index, test_index)))
+#         self.valid_index = torch.from_numpy(valid_index)
+#         self.test_index = torch.from_numpy(test_index)
+#         self.train_index = torch.from_numpy(train_index)
+#         self.num_train = len(train_index)
+
+#     def get_DGL_GCN_inputs(self):
+#         return self.train_index, self.valid_index, self.test_index, self.graph.feats.shape[1], self.graph.labels, 7, self.graph.feats, self.graph.g      
+
+#     def get_adj(self):
+#         return self.graph.get_adj()   
+
+#     def get_norm_laplacian(self):
+#         return self.graph.get_norm_laplacian()
+
+#     def get_norm_laplacian_train(self):
+#         return self.graph.get_norm_laplacian(self.train_index, train=True)  
+
+
+# class load_citeseer():
+#     def __init__(self, args):
+#         self.dataset = dgl.data.CiteseerGraphDataset()
+#         self.g = self.dataset[0]
+#         self.graph = load_dgl_data(self.g)  
+#         self.num_node = len(self.graph.feats)
+#         self.data_split()    
+
+#     def data_split(self):
+#         val_mask = self.g.ndata['val_mask']
+#         test_mask = self.g.ndata['test_mask']
+#         valid_index = np.arange(self.num_node)[val_mask]
+#         test_index = np.arange(self.num_node)[test_mask]
+#         train_index = np.setdiff1d(np.arange(self.num_node), np.concatenate((valid_index, test_index)))
+#         self.valid_index = torch.from_numpy(valid_index)
+#         self.test_index = torch.from_numpy(test_index)
+#         self.train_index = torch.from_numpy(train_index)
+#         self.num_train = len(train_index)
+
+#     def get_DGL_GCN_inputs(self):
+#         return self.train_index, self.valid_index, self.test_index, self.graph.feats.shape[1], self.graph.labels, 6, self.graph.feats, self.graph.g      
+
+#     def get_adj(self):
+#         return self.graph.get_adj()   
+
+#     def get_norm_laplacian(self):
+#         return self.graph.get_norm_laplacian()
+
+#     def get_norm_laplacian_train(self):
+#         return self.graph.get_norm_laplacian(self.train_index, train=True)     
+
+
+
+class load_dgl_GraphDataset():
+    def __init__(self, args):
+        if args.dataset == 'cora':
+            self.dataset = dgl.data.CoraGraphDataset()
+        elif args.dataset == 'citeseer':
+            self.dataset = dgl.data.CiteseerGraphDataset()
+        elif args.dataset == 'pubmed':
+            self.dataset = dgl.data.PubmedGraphDataset()
+        self.g = self.dataset[0]
+        self.classes = torch.max(self.g.ndata['label']).item() + 1
+        self.graph = load_dgl_data(self.g)  
+        self.num_node = len(self.graph.feats)
+        self.data_split()    
+
+    def data_split(self):
+        val_mask = self.g.ndata['val_mask']
+        test_mask = self.g.ndata['test_mask']
+        valid_index = np.arange(self.num_node)[val_mask]
+        test_index = np.arange(self.num_node)[test_mask]
+        train_index = np.setdiff1d(np.arange(self.num_node), np.concatenate((valid_index, test_index)))
+        self.valid_index = torch.from_numpy(valid_index)
+        self.test_index = torch.from_numpy(test_index)
+        self.train_index = torch.from_numpy(train_index)
+        self.num_train = len(train_index)
+
+    def get_DGL_GCN_inputs(self):
+        return self.train_index, self.valid_index, self.test_index, self.graph.feats.shape[1], self.graph.labels, self.classes, self.graph.feats, self.graph.g      
+
+    def get_adj(self):
+        return self.graph.get_adj()   
+
+    def get_norm_laplacian(self):
+        return self.graph.get_norm_laplacian()
+
+    def get_norm_laplacian_train(self):
+        return self.graph.get_norm_laplacian(self.train_index, train=True)     
+
+
+
+class load_corafull():
+    def __init__(self, args):
+        self.dataset = dgl.data.CoraFullDataset()
+        self.g = self.dataset[0]
+        self.classes = self.dataset.num_classes
+        self.graph = load_dgl_data(self.g)  
+        self.num_node = len(self.graph.feats)
+        self.data_split()    
+
+    def data_split(self):
+        directory = "./save/corafull/test_index.npy"
+        if os.path.exists(directory):
+            test_index = np.load("./save/corafull/test_index.npy")
+            valid_index = np.load("./save/corafull/valid_index.npy")
+        else:
+            np.random.seed(101)
+            select_index = np.random.choice(np.arange(self.num_node), 1500, replace=False)
+            valid_index = select_index[:500]
+            test_index = select_index[500:]
+            np.save("./save/corafull/test_index.npy", test_index)
+            np.save("./save/corafull/valid_index.npy", valid_index)
+        train_index = np.setdiff1d(np.arange(self.num_node), np.concatenate((valid_index, test_index)))
+        self.valid_index = torch.from_numpy(valid_index)
+        self.test_index = torch.from_numpy(test_index)
+        self.train_index = torch.from_numpy(train_index)
+        self.num_train = len(train_index)
+
+    def get_DGL_GCN_inputs(self):
+        return self.train_index, self.valid_index, self.test_index, self.graph.feats.shape[1], self.graph.labels, self.classes, self.graph.feats, self.graph.g      
+
+    def get_adj(self):
+        return self.graph.get_adj()   
+
+    def get_norm_laplacian(self):
+        return self.graph.get_norm_laplacian()
+
+    def get_norm_laplacian_train(self):
+        return self.graph.get_norm_laplacian(self.train_index, train=True)  
+
+
+
+
+class load_ogbn_dataset():
+    def __init__(self, args):
+        print("Load dataset: {}".format(args.dataset))
+        self.dataset = DglNodePropPredDataset(args.dataset)
+        self.g, node_labels = self.dataset[0]
+        self.g.ndata['label'] = node_labels[:, 0] 
+        self.graph = load_dgl_data(self.g)  
+        self.data_split()    
+        self.classes = torch.max(self.g.ndata['label']).item() + 1
+
+    def data_split(self):
+        idx_split = self.dataset.get_idx_split()
+        self.train_index = idx_split['train']
+        self.valid_index = idx_split['valid']
+        self.test_index = idx_split['test']
+        print("Number of training samples: {}".format(len(self.train_index)))
+        print("Number of validation samples: {}".format(len(self.valid_index)))
+        print("Number of testing samples: {}".format(len(self.test_index)))
+
+    def get_DGL_GCN_inputs(self):
+        return self.train_index, self.valid_index, self.test_index, self.graph.feats.shape[1], self.graph.labels, self.classes, self.graph.feats, self.graph.g      
+
+    def get_adj(self):
+        return self.graph.get_adj()   
+
+    def get_norm_laplacian(self):
+        return self.graph.get_norm_laplacian()
+
+    def get_norm_laplacian_train(self):
+        return self.graph.get_norm_laplacian(self.train_index, train=True)   
+
+
+
+def dataloader(dataset, args):
+    if dataset in ["ogbn-arxiv", 'ogbn-papers100M', 'ogbn-products']:
+        loader = load_ogbn_dataset(args)
+    elif dataset in ["cora", "citeseer", "pubmed"]:
+        loader = load_dgl_GraphDataset(args)
+    elif dataset == "corafull":
+        loader = load_corafull(args)
+    else:
+        raise('Invalid Dataset!')
+    return loader
+
+
+
+# def dataloader(dataset, args):
+#     if dataset in ["ogbn-arxiv", 'ogbn-papers100M', 'ogbn-products']:
+#         loader = load_ogbn_dataset(args)
+#     elif dataset == "pubmed":
+#         loader = load_pubmed(args)
+#     elif dataset == 'cora':
+#         loader = load_cora(args)
+#     elif dataset == 'citeseer':
+#         loader = load_citeseer(args)
+#     else:
+#         raise('Invalid Dataset!')
+#     return loader
+
+
+
 
 
 
@@ -250,7 +458,7 @@ def remove_degree_one(adj, row, col):
         dim1 = adj.shape[0]
         col_sum = scipy.sparse.csr_matrix.sum(adj, axis = 0)
         col_sum = np.array(col_sum)[0]
-        non_one_ix = np.nonzero(col_sum - 1)[0]
+        non_one_ix = np.nonzero(col_sum - 2)[0]
         one_ind = np.delete(ind, non_one_ix)
         ind = ind[non_one_ix]
         adj = adj[non_one_ix,: ]
@@ -309,6 +517,12 @@ class HLoss(nn.Module):
         b = torch.exp(x) * x
         b = -1.0 * b.sum(dim=1)
         return b
+
+
+def margin_score(pred):
+    max_score, _ = torch.max(pred, dim=1)
+    min_score, _ = torch.min(pred, dim=1)
+    return -max_score + min_score
 
 
 if __name__ == '__main__':

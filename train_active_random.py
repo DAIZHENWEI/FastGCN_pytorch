@@ -38,7 +38,7 @@ def get_args():
                         help='Proportion of samples used for training')
     parser.add_argument('--hidden', type=int, default=64,
                         help='Number of hidden units.')
-    parser.add_argument('--dropout', type=float, default=0.0,
+    parser.add_argument('--dropout', type=float, default=0.5,
                         help='Dropout rate (1 - keep probability).')
     parser.add_argument('--batchsize', type=int, default=256,
                         help='batchsize for train')

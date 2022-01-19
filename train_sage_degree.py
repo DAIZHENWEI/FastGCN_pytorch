@@ -13,7 +13,7 @@ import tqdm
 from scipy.sparse.linalg import norm as sparse_norm
 from utils import get_batches, accuracy
 from utils import sparse_mx_to_torch_sparse_tensor
-from utils_sage import load_data
+from utils_sage import load_data, dataloader
 from models import SAGE
 
 
@@ -37,7 +37,7 @@ def evaluate(model, g, nfeat, labels, val_nid, test_nid, device):
     with torch.no_grad():
         pred = model.inference(g, nfeat, device, args)
     model.train()
-    return compute_acc(pred[val_nid], labels[val_nid]), compute_acc(pred[test_nid], labels[test_nid]), pred
+    return compute_acc(pred[test_nid], labels[test_nid]), pred
 
 def load_subtensor(nfeat, labels, seeds, input_nodes):
     """
@@ -111,10 +111,10 @@ def run(args, device, data):
         if epoch >= 5:
             avg += toc - tic
         if epoch % args.eval_every == 0:
-            eval_acc, test_acc, pred = evaluate(model, g, nfeat, labels, val_nid, test_nid, device)
+            test_acc, pred = evaluate(model, g, nfeat, labels, val_nid, test_nid, device)
             if args.save_pred:
                 np.savetxt(args.save_pred + '%02d' % epoch, pred.argmax(1).cpu().numpy(), '%d')
-            print('Eval Acc {:.4f}'.format(eval_acc))
+           # print('Eval Acc {:.4f}'.format(eval_acc))
             # if eval_acc > best_eval_acc:
             #     best_eval_acc = eval_acc
             #     best_test_acc = test_acc
@@ -164,9 +164,12 @@ if __name__ == '__main__':
         device = torch.device('cpu')
 
     # load ogbn-products data
-    train_index, valid_index, test_index, in_feats, labels, n_classes, feats, graph, adj_train, adj_origin = load_data(args.dataset, args)
+    loader = dataloader(args.dataset, args)
+    train_index, valid_index, test_index, in_feats, labels, n_classes, feats, graph = loader.get_DGL_GCN_inputs()
 
-    """ Pick the nodes with large laplacian norm"""
+    """ Pick the nodes with large degrees"""
+    adj_origin = loader.get_adj()
+    adj_origin = adj_origin[train_index, :][:, train_index]
     col_norm = sparse_norm(adj_origin, axis=0)
     train_probs = col_norm / np.sum(col_norm)
     # train_probs = torch.from_numpy(train_probs)

@@ -8,11 +8,12 @@ import dgl
 import torch.nn as nn
 import dgl.nn.pytorch as dglnn
 import numpy as np
+from sklearn.metrics import f1_score
 import pdb
 import tqdm
 from utils import get_batches, accuracy
 from utils import sparse_mx_to_torch_sparse_tensor
-from utils_sage import load_data
+from utils_sage import load_data, dataloader
 from models import SAGE
 
 
@@ -21,6 +22,12 @@ def compute_acc(pred, labels):
     Compute the accuracy of prediction given the labels.
     """
     return (torch.argmax(pred, dim=1) == labels).float().sum() / len(pred)
+
+def macro_f1(pred, labels):
+    labels_pred = torch.argmax(pred, dim=1).detach().cpu()
+    labels = labels.detach().cpu()
+    return f1_score(labels_pred, labels, average='macro')
+
 
 def evaluate(model, g, nfeat, labels, val_nid, test_nid, device):
     """
@@ -35,7 +42,8 @@ def evaluate(model, g, nfeat, labels, val_nid, test_nid, device):
     with torch.no_grad():
         pred = model.inference(g, nfeat, device, args)
     model.train()
-    return compute_acc(pred[val_nid], labels[val_nid]), compute_acc(pred[test_nid], labels[test_nid]), pred
+    return compute_acc(pred[test_nid], labels[test_nid]), macro_f1(pred[test_nid], labels[test_nid]),  pred
+
 
 def load_subtensor(nfeat, labels, seeds, input_nodes):
     """
@@ -74,6 +82,7 @@ def run(args, device, data):
     best_eval_acc = 0
     best_test_acc = 0
     test_acc_list = []
+    test_f1_list = []
     for epoch in range(args.epochs):
         tic = time.time()
 
@@ -109,26 +118,27 @@ def run(args, device, data):
         if epoch >= 5:
             avg += toc - tic
         if epoch % args.eval_every == 0:
-            eval_acc, test_acc, pred = evaluate(model, g, nfeat, labels, val_nid, test_nid, device)
+            test_acc, test_f1, pred = evaluate(model, g, nfeat, labels, val_nid, test_nid, device)
             if args.save_pred:
                 np.savetxt(args.save_pred + '%02d' % epoch, pred.argmax(1).cpu().numpy(), '%d')
-            print('Eval Acc {:.4f}'.format(eval_acc))
             # if eval_acc > best_eval_acc:
             #     best_eval_acc = eval_acc
             #     best_test_acc = test_acc
             print('Test Acc {:.4f}'.format(test_acc))
+            print('Test Macro F1 {:.4f}'.format(test_f1))
             test_acc_list += [test_acc.cpu().numpy()]
+            test_f1_list += [test_f1]
     # print('Avg epoch time: {}'.format(avg / (epoch - 4)))
-    return test_acc_list
+    return test_acc_list, test_f1_list
 
 
 
 if __name__ == '__main__':
     argparser = argparse.ArgumentParser("multi-gpu training")
-    argparser.add_argument('--dataset', type=str, default='cora', help='dataset name.')
+    argparser.add_argument('--dataset', type=str, default='pubmed', help='dataset name.')
     argparser.add_argument('--gpu', type=int, default=0,
         help="GPU device ID. Use -1 for CPU training")
-    argparser.add_argument('--epochs', type=int, default=1000, help='Number of epochs to train.')
+    argparser.add_argument('--epochs', type=int, default=100, help='Number of epochs to train.')
     argparser.add_argument('--num-layers', type=int, default=3)
     argparser.add_argument('--fan-out', type=str, default='5,5,5')
     argparser.add_argument('--val-batch-size', type=int, default=10000)
@@ -159,15 +169,22 @@ if __name__ == '__main__':
     else:
         device = torch.device('cpu')
 
-    # load ogbn-products data
-    train_index, valid_index, test_index, in_feats, labels, n_classes, feats, graph, adj_train, _ = load_data(args.dataset, args)
+    """ Load dataset """
+    # if args.dataset == "ogbn_arxiv":
+    #     loader = load_ogbn_arxiv(args)
+    # if args.dataset == "pubmed":
+    #     loader = load_pubmed(args)
+    loader = dataloader(args.dataset, args)
+    train_index, valid_index, test_index, in_feats, labels, n_classes, feats, graph = loader.get_DGL_GCN_inputs()
+
     labels = labels.to(device)
     feats = feats.to(device)
     data = train_index, valid_index, test_index, in_feats, labels, n_classes, feats, graph
 
     # Run 10 times
     test_accs = []
-    test_accs = run(args, device, data)
+    test_f1 = []
+    test_accs, test_f1 = run(args, device, data)
 
 
     directory = './save/{}/'.format(args.dataset)
@@ -175,6 +192,13 @@ if __name__ == '__main__':
         os.makedirs(directory)
 
     if args.remove_degree_one:
-        np.save(directory + 'GraphSage_accuracy_list_{}_remove_degree_one.npy'.format(args.dataset), test_accs)
+        np.save(directory + 'GraphSage_accuracy_list_{}_batchsize{}_remove_degree_one.npy'.format(args.dataset, args.batchsize), test_accs)
     else:
-        np.save(directory + 'GraphSage_accuracy_list_{}.npy'.format(args.dataset), test_accs)
+        np.save(directory + 'GraphSage_accuracy_list_{}_batchsize{}.npy'.format(args.dataset, args.batchsize), test_accs)
+
+    if args.remove_degree_one:
+        np.save(directory + 'GraphSage_macro_f1_list_{}_batchsize{}_remove_degree_one.npy'.format(args.dataset, args.batchsize), test_f1)
+    else:
+        np.save(directory + 'GraphSage_macro_f1_list_{}_batchsize{}.npy'.format(args.dataset, args.batchsize), test_f1)
+
+

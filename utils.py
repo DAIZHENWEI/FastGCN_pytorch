@@ -153,6 +153,7 @@ def load_data(dataset, args):
             y_train, y_test, test_index, adj_train)
 
 
+
 def load_reddit(args):
     dataset = dgl.data.RedditDataset()
     g = dataset[0]
@@ -302,6 +303,18 @@ class HLoss(nn.Module):
         b = torch.exp(x) * x
         b = -1.0 * b.sum(dim=1)
         return b
+
+
+class Entropy_loss(nn.Module):
+    def __init__(self):
+        super(Entropy_loss, self).__init__()
+
+    def forward(self, x):
+        probs = F.softmax(x, dim=1)
+        b = torch.log(probs) * probs
+        b = -1.0 * b.sum(dim=1)
+        return b
+
 
 
 if __name__ == '__main__':
