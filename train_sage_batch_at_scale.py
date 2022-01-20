@@ -298,6 +298,7 @@ if __name__ == '__main__':
     else:
         n_cluster = n_sampled
 
+    print("========= Start clustering propagated features ==================")
     if args.sample_method == "cluster_input":
         kmeans_train = KMeans(n_clusters=n_cluster, random_state=0).fit(feats_input_train)
     else:
@@ -312,11 +313,7 @@ if __name__ == '__main__':
     for i in range(n_cluster):
         cluster_size[i] = sum(clusters==i)
 
-    # ### Use the clustering of test set to predict the training node labels
-    # clusters_test = kmeans_test.predict(feats_train)
-    # test_index_cluster_dict = collections.defaultdict(int)
-    # for i in range(num_train):
-    #     test_index_cluster_dict[train_index[i]] = clusters_test[i]
+    pdb.set_trace()
 
     if prop_to_sd:
         dists = []

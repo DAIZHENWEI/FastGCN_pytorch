@@ -141,14 +141,6 @@ def load_data(dataset, args):
         norm_adj = 1*sp.diags(np.ones(norm_adj.shape[0])) + norm_adj
         norm_adj_train = 1*sp.diags(np.ones(num_train)) + norm_adj_train
 
-    # change type to tensor
-    # norm_adj = sparse_mx_to_torch_sparse_tensor(norm_adj)
-    # features = torch.FloatTensor(features)
-    # norm_adj_train = sparse_mx_to_torch_sparse_tensor(norm_adj_train)
-    # train_features = torch.FloatTensor(train_features)
-    # y_train = torch.LongTensor(y_train)
-    # y_test = torch.LongTensor(y_test)
-    # test_index = torch.LongTensor(test_index)
     return (norm_adj, features, norm_adj_train, train_features,
             y_train, y_test, test_index, adj_train)
 
