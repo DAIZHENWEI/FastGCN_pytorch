@@ -373,8 +373,6 @@ if __name__ == '__main__':
         entropy_score = Entropy(pred).detach().cpu().numpy()
         # entropy_score = margin_score(pred).detach().cpu().numpy()
         Kt = int(len(train_index) * args.ratio)
-        if num_total_sampled - len(train_ind_sampled) < Kt:
-            Kt = num_total_sampled - len(train_ind_sampled)
         Km = Kt * redundancy
         train_entropy = entropy_score[train_index]
         train_index_sort = torch.from_numpy(train_index[train_entropy.argsort()[::-1]])
@@ -390,13 +388,17 @@ if __name__ == '__main__':
             train_ind_new = Kmeans_sample(Kt, candidates, pred)
         else:
             train_ind_new = Kmeans_sample(Kt, candidates, feats_ppg)
-        
+
         train_ind_new_sampled = np.intersect1d(train_ind_new, train_ind_sampled)
-        train_ind_sampled = np.unique(np.concatenate((train_ind_sampled, train_ind_new)))
+        if num_total_sampled - len(train_ind_sampled) < train_ind_new_sampled:
+            num_to_sample = num_total_sampled - len(train_ind_sampled)
+            train_ind_new_sampled = np.random.choice(train_ind_new_sampled, num_to_sample, replace=False)
+                   
+        train_ind_sampled = np.concatenate((train_ind_sampled, train_ind_new_sampled))
         print("Number of newly picked samples: {}, Number of total selected samples: {}".format(len(train_ind_new), len(train_ind_sampled)))
         print("Number of large entropy nodes already sampled: {}".format(len(train_ind_new_sampled)))
-        # if args.cold_start: 
-        #     GraphModel = GraphSage(args, device, data)
+
+
         GraphModel.train_nid = train_ind_sampled
         test_accs, test_f1, pred = GraphModel.run(epochs=sample_freq, return_embed=True)
         test_accs_list += test_accs
