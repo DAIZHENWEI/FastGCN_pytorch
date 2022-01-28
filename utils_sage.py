@@ -8,6 +8,7 @@ import torch.nn.functional as F
 
 import dgl
 import dgl.data
+import dgl.function as fn
 import os
 import numpy as np
 import numpy.linalg as LA
@@ -111,6 +112,19 @@ def normalize_adj(adj):
     return adj.dot(d_mat_inv_sqrt).transpose().dot(d_mat_inv_sqrt).tocoo()
 
 
+def compute_pagerank(g, DAMP = 0.85):
+    N = g.ndata['feat'].shape[0]
+    K = 10
+    g.ndata['pv'] = torch.ones(N) / N
+    degrees = g.out_degrees(g.nodes()).type(torch.float32)
+    for k in range(K):
+        g.ndata['pv'] = g.ndata['pv'] / degrees
+        g.update_all(message_func=fn.copy_src(src='pv', out='m'),
+                     reduce_func=fn.sum(msg='m', out='pv'))
+        g.ndata['pv'] = (1 - DAMP) / N + DAMP * g.ndata['pv']
+    return g.ndata['pv']
+
+
 # def nontuple_preprocess_adj(adj):
 #     adj_normalized = normalize_adj(sp.eye(adj.shape[0]) + adj)
 #     return adj_normalized.tocsr()
@@ -206,103 +220,6 @@ class load_dgl_data():
         norm_adj = nontuple_preprocess_adj(adj)   
         # norm_adj = 1*sp.diags(np.ones(norm_adj.shape[0])) + norm_adj
         return norm_adj
-
-
-
-# class load_pubmed():
-#     def __init__(self, args):
-#         self.dataset = dgl.data.PubmedGraphDataset()
-#         self.g = self.dataset[0]
-#         self.graph = load_dgl_data(self.g)  
-#         self.num_node = len(self.graph.feats)
-#         self.data_split()    
-
-#     def data_split(self):
-#         val_mask = self.g.ndata['val_mask']
-#         test_mask = self.g.ndata['test_mask']
-#         valid_index = np.arange(self.num_node)[val_mask]
-#         test_index = np.arange(self.num_node)[test_mask]
-#         train_index = np.setdiff1d(np.arange(self.num_node), np.concatenate((valid_index, test_index)))
-#         self.valid_index = torch.from_numpy(valid_index)
-#         self.test_index = torch.from_numpy(test_index)
-#         self.train_index = torch.from_numpy(train_index)
-#         self.num_train = len(train_index)
-
-#     def get_DGL_GCN_inputs(self):
-#         return self.train_index, self.valid_index, self.test_index, self.graph.feats.shape[1], self.graph.labels, 3, self.graph.feats, self.graph.g      
-
-#     def get_adj(self):
-#         return self.graph.get_adj()   
-
-#     def get_norm_laplacian(self):
-#         return self.graph.get_norm_laplacian()
-
-#     def get_norm_laplacian_train(self):
-#         return self.graph.get_norm_laplacian(self.train_index, train=True)       
-
-
-# class load_cora():
-#     def __init__(self, args):
-#         self.dataset = dgl.data.CoraGraphDataset()
-#         self.g = self.dataset[0]
-#         self.graph = load_dgl_data(self.g)  
-#         self.num_node = len(self.graph.feats)
-#         self.data_split()    
-
-#     def data_split(self):
-#         val_mask = self.g.ndata['val_mask']
-#         test_mask = self.g.ndata['test_mask']
-#         valid_index = np.arange(self.num_node)[val_mask]
-#         test_index = np.arange(self.num_node)[test_mask]
-#         train_index = np.setdiff1d(np.arange(self.num_node), np.concatenate((valid_index, test_index)))
-#         self.valid_index = torch.from_numpy(valid_index)
-#         self.test_index = torch.from_numpy(test_index)
-#         self.train_index = torch.from_numpy(train_index)
-#         self.num_train = len(train_index)
-
-#     def get_DGL_GCN_inputs(self):
-#         return self.train_index, self.valid_index, self.test_index, self.graph.feats.shape[1], self.graph.labels, 7, self.graph.feats, self.graph.g      
-
-#     def get_adj(self):
-#         return self.graph.get_adj()   
-
-#     def get_norm_laplacian(self):
-#         return self.graph.get_norm_laplacian()
-
-#     def get_norm_laplacian_train(self):
-#         return self.graph.get_norm_laplacian(self.train_index, train=True)  
-
-
-# class load_citeseer():
-#     def __init__(self, args):
-#         self.dataset = dgl.data.CiteseerGraphDataset()
-#         self.g = self.dataset[0]
-#         self.graph = load_dgl_data(self.g)  
-#         self.num_node = len(self.graph.feats)
-#         self.data_split()    
-
-#     def data_split(self):
-#         val_mask = self.g.ndata['val_mask']
-#         test_mask = self.g.ndata['test_mask']
-#         valid_index = np.arange(self.num_node)[val_mask]
-#         test_index = np.arange(self.num_node)[test_mask]
-#         train_index = np.setdiff1d(np.arange(self.num_node), np.concatenate((valid_index, test_index)))
-#         self.valid_index = torch.from_numpy(valid_index)
-#         self.test_index = torch.from_numpy(test_index)
-#         self.train_index = torch.from_numpy(train_index)
-#         self.num_train = len(train_index)
-
-#     def get_DGL_GCN_inputs(self):
-#         return self.train_index, self.valid_index, self.test_index, self.graph.feats.shape[1], self.graph.labels, 6, self.graph.feats, self.graph.g      
-
-#     def get_adj(self):
-#         return self.graph.get_adj()   
-
-#     def get_norm_laplacian(self):
-#         return self.graph.get_norm_laplacian()
-
-#     def get_norm_laplacian_train(self):
-#         return self.graph.get_norm_laplacian(self.train_index, train=True)     
 
 
 
@@ -490,6 +407,34 @@ def get_batches(train_ind, train_labels, batch_size=64, shuffle=True):
         cur_labels = train_labels[cur_ind]
         yield cur_ind, cur_labels
         i += batch_size
+
+
+
+#calculate the percentage of elements smaller than the k-th element
+def perc(input, k): 
+    return sum([1 if i else 0 for i in input<input[k]])/float(len(input))
+
+#calculate the percentage of elements larger than the k-th element
+def percd(input,k): 
+    return sum([1 if i else 0 for i in input>input[k]])/float(len(input))
+
+def perc_input(input): 
+    n = len(input)
+    order = np.argsort(input)
+    perc = np.zeros(n)
+    for i in range(n):
+        perc[order[i]] = i/n
+    return perc
+
+
+def percd_input(input): 
+    n = len(input)
+    order = np.argsort(input)
+    perc = np.zeros(n)
+    for i in range(n):
+        perc[order[i]] = 1-i/n
+    return perc
+
 
 
 def accuracy(output, labels):

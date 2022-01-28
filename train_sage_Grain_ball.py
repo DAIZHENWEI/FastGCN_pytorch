@@ -151,6 +151,7 @@ if __name__ == '__main__':
     argparser.add_argument('--hidden', type=int, default=64, help='Number of hidden units.')
     argparser.add_argument('--batchsize', type=int, default=256,
                         help='batchsize for train')
+    argparser.add_argument('--test_batchsize', type=int, default=2048, help='batchsize for testing')
     argparser.add_argument('--dropout', type=float, default=0.0)
     argparser.add_argument('--seed', type=int, default=123, help='Random seed.')
     argparser.add_argument('--num-workers', type=int, default=4,
